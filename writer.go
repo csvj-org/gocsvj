@@ -27,6 +27,13 @@ func NewWriter(w io.Writer) *Writer {
 
 // WriteHeader writes first CSVJ header-record
 func (w *Writer) WriteHeader(header []string) error {
+	seen := make(map[string]struct{}, len(header))
+	for _, name := range header {
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("duplicate header name %q", name)
+		}
+		seen[name] = struct{}{}
+	}
 	w.hlen = len(header)
 	return w.writeRaw(header)
 }

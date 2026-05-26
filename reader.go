@@ -18,138 +18,135 @@ import (
 
 // A Reader reads records from a CSVJ-encoded file.
 type Reader struct {
-	line       int
+	row        int
 	headerRead bool
 	header     []string
-	r          *bufio.Scanner
-	clSet      bool
-	clValues   []interface{}
-	clError    error
+	r          *bufio.Reader
 }
 
 // NewReader returns a new Reader that reads from r.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{
-		r: bufio.NewScanner(r),
+		r: bufio.NewReader(r),
 	}
 }
 
-// Headers reads header record from r and caches it
-// so it could be returned later too
+// Headers reads the header record from the input and caches it so subsequent
+// calls return the same slice.
 func (r *Reader) Headers() ([]string, error) {
 	if r.headerRead {
 		return r.header, nil
 	}
 
-	rawHeader, err := r.readLine()
+	raw, err := r.readLine()
 	if err != nil {
 		return nil, err
 	}
 
-	r.line = 0
-
-	r.header, err = valuesAsStrings(rawHeader)
+	values, err := parseLine(raw, "header")
 	if err != nil {
 		return nil, err
 	}
 
+	header, err := valuesAsStrings(values)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{}, len(header))
+	for _, name := range header {
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("duplicate header name %q", name)
+		}
+		seen[name] = struct{}{}
+	}
+
+	r.header = header
 	r.headerRead = true
 	return r.header, nil
 }
 
-// // Read reads one record (a slice of fields) from r
+// Read reads one data record from the input. It reads the header first if
+// that has not happened yet. io.EOF is returned at end of input.
 func (r *Reader) Read() ([]interface{}, error) {
-	if r.headerRead == false {
-		r.Headers()
+	if !r.headerRead {
+		if _, err := r.Headers(); err != nil {
+			return nil, err
+		}
 	}
-	return r.readLine()
+
+	r.row++
+	raw, err := r.readLine()
+	if err != nil {
+		return nil, err
+	}
+
+	values, err := parseLine(raw, fmt.Sprintf("row %d", r.row))
+	if err != nil {
+		return nil, err
+	}
+
+	if len(values) != len(r.header) {
+		return nil, fmt.Errorf("row %d has %d values, header has %d", r.row, len(values), len(r.header))
+	}
+
+	return values, nil
+}
+
+// readLine reads one CSVJ line and strips its terminator. A file ending
+// without a final \n or \r\n is rejected per spec §1 rule 2. A clean EOF
+// (no trailing partial line) is returned as io.EOF.
+func (r *Reader) readLine() (string, error) {
+	line, err := r.r.ReadString('\n')
+	if err == io.EOF {
+		if line == "" {
+			return "", io.EOF
+		}
+		return "", errors.New("file does not end with newline")
+	}
+	if err != nil {
+		return "", err
+	}
+	line = strings.TrimSuffix(line, "\n")
+	line = strings.TrimSuffix(line, "\r")
+	return line, nil
+}
+
+func parseLine(body, label string) ([]interface{}, error) {
+	var values []interface{}
+	if err := json.Unmarshal([]byte("["+body+"]"), &values); err != nil {
+		return nil, fmt.Errorf("%s parse error: %s", label, err.Error())
+	}
+	if ok, idx := checkCSVJTypes(values); !ok {
+		return nil, fmt.Errorf("%s parse error at item %d", label, idx)
+	}
+	return values, nil
 }
 
 func valuesAsStrings(vs []interface{}) ([]string, error) {
 	strs := make([]string, len(vs))
-
 	for i, v := range vs {
-		if w, ok := v.(string); ok {
-			strs[i] = w
-		} else {
+		w, ok := v.(string)
+		if !ok {
 			return nil, errors.New("non-string item at csvj header")
 		}
+		strs[i] = w
 	}
 	return strs, nil
 }
 
-func (r *Reader) scanLine() error {
-	if !r.r.Scan() {
-		err := r.r.Err()
-		if err == nil {
-			return io.EOF
-		}
-		return err
-	}
-
-	if err := r.r.Err(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *Reader) readLine() ([]interface{}, error) {
-	r.line++
-
-	if r.clSet {
-		r.clSet = false
-		return r.clValues, r.clError
-	}
-
-	err := r.scanLine()
-
-	if err != nil {
-		return nil, err
-	}
-
-	sl := strings.TrimSpace(r.r.Text())
-	if sl == "" {
-		r.clValues, r.clError = r.readLine()
-		if r.clError == io.EOF {
-			return nil, io.EOF
-		}
-		r.clSet = true
-	}
-	line := "[" + sl + "]"
-
-	var lv []interface{}
-	err = json.Unmarshal([]byte(line), &lv)
-	if err != nil {
-		err = fmt.Errorf("parse error row %d : %s", r.line, err.Error())
-		return nil, err
-	}
-
-	typesafe, erritem := checkCSVJTypes(lv)
-
-	if !typesafe {
-		return nil, fmt.Errorf("row %d parse error at item %d", r.line, erritem)
-	}
-
-	return lv, nil
-}
-
 func checkCSVJTypes(ar []interface{}) (bool, int) {
-
 	for idx, el := range ar {
 		if el == nil {
 			continue
 		}
-
 		switch el.(type) {
 		case float64:
 		case string:
 		case bool:
-			continue
-
 		default:
 			return false, idx
 		}
 	}
-
 	return true, -1
 }

@@ -11,7 +11,6 @@ import (
 func TestSimpleReader(t *testing.T) {
 	csvj := `"Header1", "Header2", "Header3"` + "\n"
 	csvj += `"Row1", "Row2", "Row3"` + "\n"
-	csvj += " " // empty last line, just in case
 
 	r := NewReader(strings.NewReader(csvj))
 
@@ -44,67 +43,34 @@ func TestSimpleReader(t *testing.T) {
 }
 
 func TestSimpleReaderNoNewline(t *testing.T) {
+	// Spec §1 rule 2: every file MUST end with \n or \r\n. A data row
+	// without a trailing terminator is rejected.
 	csvj := `"Header1", "Header2", "Header3"` + "\n"
 	csvj += `42, 42, false`
 
 	r := NewReader(strings.NewReader(csvj))
 
-	hdr, err := r.Headers()
-	if err != nil {
-		t.Error(err)
+	if _, err := r.Headers(); err != nil {
+		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(hdr, []string{"Header1", "Header2", "Header3"}) {
-		t.Error("Unexpected Header")
-	}
-
-	row, err := r.Read()
-	if err != nil {
-		t.Error(err)
-	}
-
-	erow := []interface{}{42.0, 42.0, false}
-
-	if !reflect.DeepEqual(row, erow) {
-		t.Error("Bad Row", row, "expected", erow, "reason")
-	}
-
-	_, eofErr := r.Read()
-	if eofErr != io.EOF {
-		t.Error("EOF is expected on empty line")
+	if _, err := r.Read(); err == nil {
+		t.Error("expected rejection of file without trailing newline")
 	}
 }
 
 func TestReaderEmptyLineInMiddle(t *testing.T) {
+	// Spec §1 rule 3: every data line MUST contain exactly as many values
+	// as the header line. An empty line in a file with a non-zero header
+	// is a 0-value row and gets rejected as ragged.
 	csvj := `"Header1", "Header2", "Header3"` + "\n"
 	csvj += "\n"
-	csvj += `null, null, true`
+	csvj += `null, null, true` + "\n"
 
 	r := NewReader(strings.NewReader(csvj))
 
-	row, err := r.Read()
-	if err != nil {
-		t.Error(err)
-	}
-
-	if !reflect.DeepEqual(row, []interface{}{}) {
-		t.Error("Bad Row", row, "expected empty array")
-	}
-
-	row, err = r.Read()
-	if err != nil {
-		t.Error(err)
-	}
-
-	erow := []interface{}{nil, nil, true}
-
-	if !reflect.DeepEqual(row, erow) {
-		t.Error("Bad Row", row, "expected", erow, "reason")
-	}
-
-	_, eofErr := r.Read()
-	if eofErr != io.EOF {
-		t.Error("EOF is expected on empty line")
+	if _, err := r.Read(); err == nil {
+		t.Error("expected rejection of ragged (zero-value) row")
 	}
 }
 
@@ -377,5 +343,88 @@ func TestReaderLongValue(t *testing.T) {
 	}
 	if got != longValue {
 		t.Error("long value did not round-trip")
+	}
+}
+
+// The tests below assert the strict §1 rules now enforced by the reader.
+
+func TestReaderEmptyHeaderLine(t *testing.T) {
+	// Spec §1 rule 1: a single `\n` is the minimum valid CSVJ file. It
+	// represents an empty header (zero columns) and zero data rows.
+	r := NewReader(strings.NewReader("\n"))
+
+	hdr, err := r.Headers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hdr) != 0 {
+		t.Errorf("expected empty header, got %v", hdr)
+	}
+
+	if _, err := r.Read(); err != io.EOF {
+		t.Errorf("expected io.EOF after empty header, got %v", err)
+	}
+}
+
+func TestReaderEmptyHeaderLineCRLF(t *testing.T) {
+	r := NewReader(strings.NewReader("\r\n"))
+	hdr, err := r.Headers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hdr) != 0 {
+		t.Errorf("expected empty header, got %v", hdr)
+	}
+}
+
+func TestReaderTrailingNewlineRequired(t *testing.T) {
+	// Header line is well-formed but the file lacks a final \n.
+	r := NewReader(strings.NewReader(`"h1"`))
+
+	if _, err := r.Headers(); err == nil {
+		t.Error("expected rejection of header without trailing newline")
+	}
+}
+
+func TestReaderRaggedShort(t *testing.T) {
+	// Spec §1 rule 3: a row with fewer values than the header is rejected.
+	csvj := `"a", "b", "c"` + "\n"
+	csvj += `"x", "y"` + "\n"
+
+	r := NewReader(strings.NewReader(csvj))
+	if _, err := r.Read(); err == nil {
+		t.Error("expected rejection of short ragged row")
+	}
+}
+
+func TestReaderRaggedLong(t *testing.T) {
+	// Spec §1 rule 3: a row with more values than the header is rejected.
+	csvj := `"a", "b"` + "\n"
+	csvj += `"x", "y", "z"` + "\n"
+
+	r := NewReader(strings.NewReader(csvj))
+	if _, err := r.Read(); err == nil {
+		t.Error("expected rejection of long ragged row")
+	}
+}
+
+func TestReaderDuplicateHeader(t *testing.T) {
+	// Spec §1 rule 4: duplicate column names in the header are rejected.
+	csvj := `"a", "b", "a"` + "\n"
+
+	r := NewReader(strings.NewReader(csvj))
+	if _, err := r.Headers(); err == nil {
+		t.Error("expected rejection of duplicate header name")
+	}
+}
+
+func TestReaderDuplicateEmptyHeader(t *testing.T) {
+	// Spec §1 rule 4: the duplicate check applies to empty strings too;
+	// only the all-empty-line case (zero columns) is exempt.
+	csvj := `"", ""` + "\n"
+
+	r := NewReader(strings.NewReader(csvj))
+	if _, err := r.Headers(); err == nil {
+		t.Error("expected rejection of duplicate empty-string headers")
 	}
 }
