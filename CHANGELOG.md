@@ -18,6 +18,16 @@ a first tagged release is cut.
 ### Changed
 - Third-party GitHub Actions in the CI workflow are now SHA-pinned with
   the tag preserved as a trailing comment.
+- **Reader behavior, spec §1 enforcement (breaking).** `Reader` now
+  enforces the structural rules locked in the 2026-05-26 spec session:
+  a single `\n` is a valid empty-header file; files without a final
+  `\n` or `\r\n` are rejected; rows whose value count differs from the
+  header are rejected; duplicate header names (including duplicate
+  empty strings) are rejected. Internally the reader was switched from
+  `bufio.Scanner` to `bufio.Reader` to make missing-trailing-newline
+  detectable.
+- `Writer.WriteHeader` rejects duplicate header names so the writer
+  cannot produce a file the strict reader would refuse.
 
 ### Removed
 - `.travis.yml` — Travis CI is no longer used.

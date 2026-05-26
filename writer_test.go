@@ -243,6 +243,24 @@ func TestWriterMultipleRows(t *testing.T) {
 	}
 }
 
+func TestWriterDuplicateHeader(t *testing.T) {
+	// Spec §1 rule 4: writer should reject duplicate header names so it
+	// cannot produce a file the strict reader would refuse.
+	var sw strings.Builder
+	w := NewWriter(&sw)
+	if err := w.WriteHeader([]string{"a", "b", "a"}); err == nil {
+		t.Error("expected rejection of duplicate header name")
+	}
+}
+
+func TestWriterDuplicateEmptyHeader(t *testing.T) {
+	var sw strings.Builder
+	w := NewWriter(&sw)
+	if err := w.WriteHeader([]string{"", ""}); err == nil {
+		t.Error("expected rejection of duplicate empty-string headers")
+	}
+}
+
 func TestWriterNonStrictHeaderLength(t *testing.T) {
 	// With StrictHeaders disabled the writer should accept rows whose length
 	// does not match the header. (Spec-wise this produces a ragged file —
